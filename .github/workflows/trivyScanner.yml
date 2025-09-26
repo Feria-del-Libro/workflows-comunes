@@ -1,0 +1,187 @@
+on:
+  workflow_call:
+    inputs:
+      RELEASE_REVISION:
+        required: true
+        type: string
+      ECR_REPOSITORY:
+        required: true
+        type: string
+      DEPLOYMENT:
+        required: false
+        type: string
+
+name: Scan docker images for vulnerabilities
+
+env:
+  DEPLOYMENT: ${{ inputs.DEPLOYMENT }}
+
+jobs:
+  reusable_workflow_job:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: rackoot/common-workflows
+        ref: main
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Pull docker image
+      env:
+        DOCKER_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ECR_REPOSITORY }}:${{ inputs.RELEASE_REVISION }}
+      run: docker pull ${{ env.DOCKER_IMAGE }}
+
+    - name: Set deployment name # if is different from secrets.DEPLOYMENT
+      if: ${{ inputs.DEPLOYMENT }}
+      run: echo "DEPLOYMENT=${{ inputs.DEPLOYMENT }}" >> $GITHUB_ENV
+
+    - name: Set report filenames
+      run: |
+        SCAN_DATE=$(date +%Y%m%d)
+        echo "SCAN_DATE=$SCAN_DATE" >> $GITHUB_ENV
+        echo "OS_REPORT=${{ env.DEPLOYMENT }}-os-$SCAN_DATE.txt" >> $GITHUB_ENV
+        echo "LIBRARY_REPORT=${{ env.DEPLOYMENT }}-lib-$SCAN_DATE.txt" >> $GITHUB_ENV
+
+    - name: Install Trivy v0.62.1
+      uses: aquasecurity/setup-trivy@v0.2.3
+      with:
+        version: v0.62.1
+
+    - name: Run Trivy Library OS scanner (conditional policy)
+      run: |
+        if [ -f .trivy/trivy-ignore.yaml ]; then
+          echo "Using .trivy/trivy-ignore.yaml"
+          trivy image \
+            --ignore-unfixed \
+            --severity CRITICAL,HIGH \
+            --vuln-type library \
+            --format json \
+            --timeout 10m \
+            --ignore-policy .trivy/trivy-ignore.yaml \
+            --output "$OS_REPORT" \
+            "$DOCKER_IMAGE"
+        else
+          echo "Running without ignore-policy"
+          trivy image \
+            --ignore-unfixed \
+            --severity CRITICAL,HIGH \
+            --vuln-type library \
+            --format json \
+            --timeout 10m \
+            "$DOCKER_IMAGE"
+        fi
+      env:
+        DOCKER_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ECR_REPOSITORY }}:${{ inputs.RELEASE_REVISION }}
+
+
+    - name: Run Trivy Library vulnerability scanner (conditional policy)
+      run: |
+        if [ -f .trivy/trivy-ignore.yaml ]; then
+          echo "Using .trivy/trivy-ignore.yaml"
+          trivy image \
+            --ignore-unfixed \
+            --severity CRITICAL,HIGH \
+            --vuln-type library \
+            --format json \
+            --timeout 10m \
+            --ignore-policy .trivy/trivy-ignore.yaml \
+            --output lib.json \
+            "$DOCKER_IMAGE"
+        else
+          echo "Running without ignore-policy"
+          trivy image \
+            --ignore-unfixed \
+            --severity CRITICAL,HIGH \
+            --vuln-type library \
+            --format json \
+            --timeout 10m \
+            --output os.json \
+            "$DOCKER_IMAGE"
+        fi
+      env:
+        DOCKER_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ECR_REPOSITORY }}:${{ inputs.RELEASE_REVISION }}
+
+    - name: Check OS vulnerabilities from Trivy reports
+      run: |
+        total=$(jq '.Results[].Vulnerabilities | length' "os.json" 2>/dev/null | awk '{s+=$1} END {print s}')
+        if [[ $total -gt 0 ]]; then
+          echo "SLACK_MESSAGE=:disappointed: Found $total vulnerabilities in ${{ env.DEPLOYMENT }}" >> $GITHUB_ENV
+          echo "HAS_VULNS=true" >> $GITHUB_ENV
+        else
+          echo "SLACK_MESSAGE=:blush: No vulnerabilities found in ${{ env.DEPLOYMENT }}" >> $GITHUB_ENV
+          echo "HAS_VULNS=false" >> $GITHUB_ENV
+        fi
+
+    - name: Create OS vulnerability summary
+      run: |
+        if ! jq -r '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities[] | "\(.VulnerabilityID) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "no fix") [\(.Severity)]"' os.json > "$OS_REPORT"; then
+          echo "CONGRATS: No vulnerabilities found in $DEPLOYMENT on $SCAN_DATE." > "$OS_REPORT"
+        fi
+
+    - name: Create Library vulnerability summary
+      run: |
+        if ! jq -r '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities[] | "\(.VulnerabilityID) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "no fix") [\(.Severity)]"' lib.json > "$LIBRARY_REPORT"; then
+          echo "CONGRATS: No vulnerabilities found in $DEPLOYMENT on $SCAN_DATE." > "$LIBRARY_REPORT"
+        fi
+
+    - name: Check if OS report has content
+      id: check_os
+      run: |
+        if [ -s "$OS_REPORT" ]; then
+          echo "has_os_report=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_os_report=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Check if LIBRARY report has content
+      id: check_lib
+      run: |
+        if [ -s "$LIBRARY_REPORT" ]; then
+          echo "has_lib_report=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_lib_report=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Upload OS report to Slack
+      uses: MeilCli/slack-upload-file@v4
+      if: steps.check_os.outputs.has_os_report == 'true'
+      with:
+        slack_token: ${{ secrets.SLACK_BOT_TOKEN }}
+        channel_id: ${{ vars.SLACK_CHANNEL }}
+        file_path: ${{ env.OS_REPORT }}
+        file_type: "text"
+        initial_comment: "${{ env.SLACK_MESSAGE }} (OS)"
+        title: "OS vulnerabilities for ${{ env.DEPLOYMENT }}"
+
+    - name: Check Library vulnerabilities from Trivy reports
+      run: |
+        total=$(jq '.Results[].Vulnerabilities | length' "lib.json" 2>/dev/null | awk '{s+=$1} END {print s}')
+        if [[ $total -gt 0 ]]; then
+          echo "SLACK_MESSAGE=:disappointed: Found $total vulnerabilities in ${{ env.DEPLOYMENT }}" >> $GITHUB_ENV
+          echo "HAS_VULNS=true" >> $GITHUB_ENV
+        else
+          echo "SLACK_MESSAGE=:blush: No vulnerabilities found in ${{ env.DEPLOYMENT }}" >> $GITHUB_ENV
+          echo "HAS_VULNS=false" >> $GITHUB_ENV
+        fi
+
+    - name: Upload Library report to Slack
+      uses: MeilCli/slack-upload-file@v4
+      with:
+        if: steps.check_os.outputs.has_lib_report == 'true'
+        slack_token: ${{ secrets.SLACK_BOT_TOKEN }}
+        channel_id: ${{ vars.SLACK_CHANNEL }}
+        file_path: ${{ env.LIBRARY_REPORT }}
+        file_type: "text"
+        initial_comment: "${{ env.SLACK_MESSAGE }} (Library)"
+        title: "Library vulnerabilities for ${{ env.DEPLOYMENT }}"
