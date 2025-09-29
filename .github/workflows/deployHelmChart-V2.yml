@@ -49,6 +49,7 @@ env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   KUBE_NAMESPACE: ${{ inputs.ENVIRONMENT }}
+  CLUSTER_ROLE_ARN: "arn:aws:iam::${{ inputs.AWS_ACCOUNT }}:role/Admin-Role"
 jobs:
   reusable_workflow_job:
     name: Deploy Chart
@@ -104,8 +105,8 @@ jobs:
     - name: Deploy chart
       uses: MartinQuesada/eks-helm-deploy-action@v3.3
       with:
-        aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ vars.AWS_REGION }}
         cluster-name: ${{ env.KUBE_CLUSTER }}
         cluster-role-arn: ${{ env.CLUSTER_ROLE_ARN }}
