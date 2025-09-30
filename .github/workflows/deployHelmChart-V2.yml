@@ -123,7 +123,12 @@ jobs:
       run: |
         helm repo add myrepo ${{ env.HELM_CHART_REPO }}
         helm repo update
-      
+
+    - name: Check AWS credentials
+      run: |
+        echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
+        aws sts get-caller-identity
+
     - name: Deploy Helm chart
       run: |
         helm upgrade -i ${{ env.DEPLOYMENT }} ${{ env.HELM_CHART_REPO }}/${{ env.DEPLOYMENT }}/${{ env.CHART_NAME }} \
