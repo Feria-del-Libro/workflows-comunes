@@ -126,7 +126,7 @@ jobs:
       
     - name: Deploy Helm chart
       run: |
-        helm upgrade -i ${{ env.DEPLOYMENT }} ${{ env.HELM_CHART_REPO }}/${{ env.CHART_NAME }} \
+        helm upgrade -i ${{ env.DEPLOYMENT }} ${{ env.HELM_CHART_REPO }}/${{ env.DEPLOYMENT }}/${{ env.CHART_NAME }} \
           --namespace ${{ env.KUBE_NAMESPACE }} \
           --create-namespace \
           --version ${{ inputs.RELEASE_REVISION }} \
