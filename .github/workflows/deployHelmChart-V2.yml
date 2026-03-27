@@ -87,7 +87,7 @@ jobs:
       run: echo "CHART_NAME=${{ inputs.CHART_NAME }}" >> $GITHUB_ENV
 
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         ref: ${{ inputs.RELEASE_REVISION }}
 
@@ -98,7 +98,7 @@ jobs:
           echo "CHECKOUT_MASTER=1" >> $GITHUB_ENV
         fi
    
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         ref: ${{ github.event.pull_request.head.sha }}
 

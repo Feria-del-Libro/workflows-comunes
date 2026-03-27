@@ -21,12 +21,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         ref: ${{ github.event.pull_request.head.sha }}
 
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
+      uses: aws-actions/configure-aws-credentials@v6
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -35,23 +35,13 @@ jobs:
 
     - name: Login to Amazon ECR
       id: login-ecr
-      uses: MartinQuesada/gh-ecr-login@v1
+      uses: aws-actions/amazon-ecr-login@v2
       with:
-        access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        region: us-east-1
+        mask-password: true
 
     - name: Set up Docker Buildx
       id: buildx
-      uses: docker/setup-buildx-action@master
-
-    - name: Docker cache layers
-      uses: actions/cache@v3
-      with:
-        path: /tmp/.buildx-cache
-        key: ${{ runner.os }}-single-buildx-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-single-buildx
+      uses: docker/setup-buildx-action@v3
 
     - name: Gnerate SSL key
       if: ${{ inputs.GENERATE_SSL_KEY }}
@@ -62,8 +52,16 @@ jobs:
     - name: Build & Push Image
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RELEASE_REVISION: ${{ inputs.RELEASE_REVISION }}
         RELEASE_IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ECR_REPOSITORY }}:${{ inputs.RELEASE_REVISION }}
       run: |
-        DOCKER_OPTS="${DOCKER_OPTS} --registry-mirror=https://mirror.gcr.io"  docker build -t ${{ inputs.ECR_REPOSITORY }}:${{ inputs.RELEASE_REVISION }} . -f ${{ inputs.DOCKER_FILE }} --build-arg GIT_TAG_VERSION=${{ env.RELEASE_REVISION }}
-        docker tag ${{ inputs.ECR_REPOSITORY }}:${{ inputs.RELEASE_REVISION }} ${{ env.RELEASE_IMAGE  }}
-        docker push ${{ env.RELEASE_IMAGE  }}
+        docker buildx build \
+          -t ${{ inputs.ECR_REPOSITORY }}:${{ inputs.RELEASE_REVISION }} \
+          -f ${{ inputs.DOCKER_FILE }} \
+          --build-arg GIT_TAG_VERSION=${{ inputs.RELEASE_REVISION }} \
+          --cache-from type=gha \
+          --cache-to type=gha,mode=max \
+          --load \
+          .
+        docker tag ${{ inputs.ECR_REPOSITORY }}:${{ inputs.RELEASE_REVISION }} ${{ env.RELEASE_IMAGE }}
+        docker push ${{ env.RELEASE_IMAGE }}
